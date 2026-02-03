@@ -1,0 +1,12 @@
+streamlit
+numpy
+pandas
+pillow
+opencv-python-headless
+openpyxl
+reportlab
+python-docx
+
+
+
+
