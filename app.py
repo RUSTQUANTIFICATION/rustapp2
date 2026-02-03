@@ -1,6 +1,6 @@
 import os
 import io
-from datetime import date, datetime
+from datetime import date
 
 import streamlit as st
 import numpy as np
@@ -21,26 +21,34 @@ from reportlab.lib import colors
 from rust_analyzer import analyze_rust_bgr
 
 # ============================================================
-# Config
+# HARD-LOCKED COMPANY BASELINE SETTINGS (crew cannot change)
 # ============================================================
-MAX_PHOTOS_IN_PDF = 30
+exclude_dark = True          # Always exclude shadows
+min_v = 40                   # Shadow threshold (V)
+kernel_size = 5              # Morphology kernel
+open_iters = 1               # Remove small noise
+close_iters = 2              # Fill small gaps
 
-st.set_page_config(page_title="Fleet Rust Monitoring – One Report", layout="wide")
+minor_thr = 5.0              # Severity thresholds
+moderate_thr = 15.0
+
+alert_rust_pct = 10.0        # Fleet alert thresholds
+alert_increase_pct = 2.0
+
+MAX_PHOTOS_IN_PDF = 30       # PDF photo cap
 
 # ============================================================
-# Fleet master data (EDIT THIS LIST to match your 25 vessels)
+# Fleet master data (EDIT these 25 vessels)
 # ============================================================
 FLEET_MASTER = [
-    # vessel, paint manufacturer, yard, coating_applied_date, coating_system/notes
     {"Vessel": "ASIA UNITY", "PaintManufacturer": "Jotun", "Yard": "COSCO Guangzhou", "CoatingAppliedDate": "2025-03-15", "CoatingNotes": "Ballast tank / touch-up"},
     {"Vessel": "ASIA LIBERTY", "PaintManufacturer": "Hempel", "Yard": "Dalian", "CoatingAppliedDate": "2024-11-10", "CoatingNotes": "Cargo hold coating"},
     {"Vessel": "ASIA EVERGREEN", "PaintManufacturer": "International", "Yard": "Zhoushan", "CoatingAppliedDate": "2024-07-05", "CoatingNotes": "Ballast tank full coat"},
     {"Vessel": "ASIA ASPARA", "PaintManufacturer": "Jotun", "Yard": "COSCO", "CoatingAppliedDate": "2023-12-20", "CoatingNotes": "Spot repair"},
     {"Vessel": "ASIA INSPIRE", "PaintManufacturer": "Hempel", "Yard": "Guangzhou", "CoatingAppliedDate": "2025-01-18", "CoatingNotes": "Hold coating"},
-    # ---- Add remaining vessels until you reach 25 ----
 ]
 
-# If you don’t want to type all 25 now, we auto-fill placeholders up to 25
+# Auto-fill placeholders up to 25 if not provided yet
 while len(FLEET_MASTER) < 25:
     idx = len(FLEET_MASTER) + 1
     FLEET_MASTER.append({
@@ -54,8 +62,10 @@ while len(FLEET_MASTER) < 25:
 master_df_default = pd.DataFrame(FLEET_MASTER)
 
 # ============================================================
-# Header
+# Page setup + branding
 # ============================================================
+st.set_page_config(page_title="Fleet Rust Monitoring – One Report", layout="wide")
+
 if os.path.exists("logo.png"):
     c1, c2 = st.columns([1, 6])
     with c1:
@@ -66,10 +76,25 @@ else:
     st.title("Fleet Rust Monitoring – One Report")
 
 st.caption(
-    "Objective: (a) trigger proactive action when rust increases, "
-    "(b) identify poor-performing paint manufacturers or yards based on trends."
+    "Objective: (a) react proactively when rust increases, "
+    "(b) identify poor-performing paint manufacturers or yards using trend data."
 )
 st.divider()
+
+# ============================================================
+# Sidebar (READ-ONLY, locked settings)
+# ============================================================
+with st.sidebar:
+    st.header("Analysis Settings (Locked)")
+    st.info("Company baseline settings are locked for consistency across fleet.")
+    st.write(f"Exclude dark pixels: {exclude_dark}")
+    st.write(f"Shadow threshold (V): {min_v}")
+    st.write(f"Kernel size: {kernel_size}")
+    st.write(f"Open iters: {open_iters}")
+    st.write(f"Close iters: {close_iters}")
+    st.divider()
+    st.write(f"Severity: Minor < {minor_thr}%, Moderate < {moderate_thr}%")
+    st.write(f"Alerts: Rust ≥ {alert_rust_pct}% OR Increase ≥ {alert_increase_pct}%")
 
 # ============================================================
 # Helpers
@@ -87,13 +112,12 @@ def parse_date_safe(s):
         return None
 
 def months_between(d1: date, d2: date) -> float:
-    # d1 later, d2 earlier
     return max((d1 - d2).days / 30.44, 0.0)
 
-def get_severity(rust_pct, minor_thr, moderate_thr):
-    if rust_pct < minor_thr:
+def get_severity(rust_pct, minor_thr_, moderate_thr_):
+    if rust_pct < minor_thr_:
         return "Minor"
-    if rust_pct < moderate_thr:
+    if rust_pct < moderate_thr_:
         return "Moderate"
     return "Severe"
 
@@ -207,28 +231,7 @@ def to_excel_bytes(df: pd.DataFrame, sheet_name="Sheet1") -> bytes:
     return out.getvalue()
 
 # ============================================================
-# Sidebar settings
-# ============================================================
-with st.sidebar:
-    st.header("Analysis Settings")
-    exclude_dark = st.checkbox("Exclude dark pixels", True)
-    min_v = st.slider("Shadow threshold (V)", 0, 255, 35)
-    kernel_size = st.slider("Kernel size", 1, 21, 5, 2)
-    open_iters = st.slider("Open iters", 0, 5, 1)
-    close_iters = st.slider("Close iters", 0, 5, 2)
-
-    st.divider()
-    st.header("Severity thresholds")
-    minor_thr = st.number_input("Minor < (%)", value=5.0)
-    moderate_thr = st.number_input("Moderate < (%)", value=15.0)
-
-    st.divider()
-    st.header("Alert thresholds")
-    alert_rust_pct = st.number_input("Alert if Rust % ≥", value=10.0)
-    alert_increase_pct = st.number_input("Alert if increase vs last ≥ (%)", value=2.0)
-
-# ============================================================
-# State: master + log
+# State init
 # ============================================================
 if "master_df" not in st.session_state:
     st.session_state.master_df = master_df_default.copy()
@@ -269,10 +272,10 @@ with tab1:
             inspector = st.text_input("Inspector")
             remarks = st.text_area("Remarks", height=90)
 
-        # auto-fill from master
+        # Auto-fill from master
         row = master_df[master_df["Vessel"] == vessel].iloc[0]
         paint_maker = st.text_input("Paint Manufacturer", value=str(row["PaintManufacturer"]))
-        yard = st.text_input("Yard (where coating applied)", value=str(row["Yard"]))
+        yard = st.text_input("Yard (coating applied)", value=str(row["Yard"]))
         coating_applied = st.text_input("Coating Applied Date (YYYY-MM-DD)", value=str(row["CoatingAppliedDate"]))
         coating_notes = st.text_input("Coating notes/system", value=str(row.get("CoatingNotes", "")))
 
@@ -283,12 +286,11 @@ with tab1:
             "Do NOT use both options together."
         )
 
-        report_file = st.file_uploader("Option A – Report file (.xlsx or .docx)", ["xlsx", "docx"], key="report_upl")
+        report_file = st.file_uploader("Option A – Report file (.xlsx or .docx)", ["xlsx", "docx"])
         photos = st.file_uploader(
             "Option B – Photo(s) (PNG/JPG/JPEG)",
             ["png", "jpg", "jpeg"],
-            accept_multiple_files=True,
-            key="photos_upl"
+            accept_multiple_files=True
         )
 
         run = st.form_submit_button("Analyze + Add to Fleet Log")
@@ -304,7 +306,6 @@ with tab1:
             st.error("Please use only ONE option: report file OR photos.")
             st.stop()
 
-        # Parse coating date/season
         coating_dt = parse_date_safe(coating_applied)
         coating_season = season_from_month(coating_dt.month) if coating_dt else "Unknown"
 
@@ -389,11 +390,10 @@ with tab1:
             st.stop()
 
         rust_pct_total = 100 * rust_px_total / max(valid_px_total, 1)
-        severity = get_severity(rust_pct_total, float(minor_thr), float(moderate_thr))
+        severity = get_severity(rust_pct_total, minor_thr, moderate_thr)
 
         st.success(f"TOTAL Rust: {rust_pct_total:.2f}% | Severity: {severity}")
 
-        # Create PDF
         report_meta = {
             "Vessel": vessel,
             "Tank / Hold": tank,
@@ -425,7 +425,6 @@ with tab1:
             mime="application/pdf"
         )
 
-        # Append to log
         new_row = {
             "InspectionDate": str(insp_date),
             "Vessel": vessel,
@@ -447,8 +446,7 @@ with tab1:
         }
 
         st.session_state.log_df = pd.concat([st.session_state.log_df, pd.DataFrame([new_row])], ignore_index=True)
-
-        st.info("Added this inspection to Fleet Log (session). Download the log in the Dashboard tab to keep history.")
+        st.info("Added this inspection to Fleet Log (session). Download the Fleet Log in the Dashboard tab to keep history.")
 
 # ============================================================
 # TAB 2: Fleet Dashboard
@@ -511,19 +509,15 @@ with tab2:
         st.warning("No log data yet. Run at least one inspection in the first tab, then download the log.")
         st.stop()
 
-    # Clean dates
     log_df["InspectionDate_dt"] = pd.to_datetime(log_df["InspectionDate"], errors="coerce")
     log_df["CoatingAppliedDate_dt"] = pd.to_datetime(log_df["CoatingAppliedDate"], errors="coerce")
     log_df = log_df.dropna(subset=["InspectionDate_dt"])
 
-    # Age since coating
     log_df["AgeMonths"] = log_df.apply(
         lambda r: months_between(r["InspectionDate_dt"].date(), r["CoatingAppliedDate_dt"].date())
         if pd.notna(r["CoatingAppliedDate_dt"]) else np.nan,
         axis=1
     )
-
-    # Month bucket
     log_df["Month"] = log_df["InspectionDate_dt"].dt.to_period("M").astype(str)
 
     st.divider()
@@ -549,10 +543,8 @@ with tab2:
         df = df[df["Tank/Hold"] == tank_f]
 
     st.divider()
-    st.write("### 5) Alerts (Proactive reaction)")
+    st.write("### 5) Alerts")
     df_sorted = df.sort_values(["Vessel", "Tank/Hold", "InspectionDate_dt"])
-
-    # compute increase vs last inspection for same Vessel+Tank
     df_sorted["PrevRust"] = df_sorted.groupby(["Vessel", "Tank/Hold"])["TotalRustPct"].shift(1)
     df_sorted["IncreaseVsLast"] = df_sorted["TotalRustPct"] - df_sorted["PrevRust"]
 
@@ -575,7 +567,6 @@ with tab2:
     st.write("### 6) Vessel Trend (Monthly)")
     trend = df.groupby(["Vessel", "Month"], as_index=False)["TotalRustPct"].mean()
     if vessel_f == "(All)":
-        # show fleet average trend
         fleet_trend = df.groupby("Month", as_index=False)["TotalRustPct"].mean().sort_values("Month")
         st.line_chart(fleet_trend.set_index("Month")["TotalRustPct"])
         st.caption("Fleet average rust% trend by month (filtered).")
@@ -586,16 +577,17 @@ with tab2:
             st.caption(f"{vessel_f} average rust% trend by month.")
 
     st.divider()
-    st.write("### 7) Worst performers (current month / latest)")
+    st.write("### 7) Worst performers (latest per tank/hold)")
     latest = df.sort_values("InspectionDate_dt").groupby(["Vessel", "Tank/Hold"], as_index=False).tail(1)
     worst = latest.sort_values("TotalRustPct", ascending=False).head(10)
-    st.dataframe(worst[["InspectionDate", "Vessel", "Tank/Hold", "TotalRustPct", "PaintManufacturer", "Yard", "AgeMonths"]],
-                 use_container_width=True)
+    st.dataframe(
+        worst[["InspectionDate", "Vessel", "Tank/Hold", "TotalRustPct", "PaintManufacturer", "Yard", "AgeMonths"]],
+        use_container_width=True
+    )
 
     st.divider()
     st.write("### 8) Compare Performance: Paint Manufacturer & Yard")
 
-    # Manufacturer performance
     maker_perf = df.groupby("PaintManufacturer", as_index=False).agg(
         AvgRustPct=("TotalRustPct", "mean"),
         MedianRustPct=("TotalRustPct", "median"),
@@ -608,7 +600,6 @@ with tab2:
     if len(maker_perf) > 1:
         st.bar_chart(maker_perf.set_index("PaintManufacturer")["AvgRustPct"])
 
-    # Yard performance
     yard_perf = df.groupby("Yard", as_index=False).agg(
         AvgRustPct=("TotalRustPct", "mean"),
         MedianRustPct=("TotalRustPct", "median"),
@@ -622,6 +613,6 @@ with tab2:
         st.bar_chart(yard_perf.set_index("Yard")["AvgRustPct"])
 
     st.caption(
-        "Tip: For fair comparison, keep coating system and age comparable. "
-        "We capture AgeMonths to normalize later (next upgrade: rate-of-rust per month)."
+        "Tip: For fair comparison, keep coating age comparable. We capture AgeMonths for later normalization "
+        "(next step: rate-of-rust per month within age bands)."
     )
