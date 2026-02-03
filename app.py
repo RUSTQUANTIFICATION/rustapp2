@@ -259,12 +259,38 @@ with tab1:
 
     master_df = st.session_state.master_df
     vessel_list = master_df["Vessel"].tolist()
+# --- Vessel selection OUTSIDE the form (important) ---
+vessel = st.selectbox("Vessel", vessel_list, key="vessel_select")
 
-    with st.form("inspect"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            insp_date = st.date_input("Inspection Date", date.today())
-            vessel = st.selectbox("Vessel", vessel_list)
+# Read master data for selected vessel
+row = master_df[master_df["Vessel"] == vessel].iloc[0]
+
+default_paint = str(row["PaintManufacturer"])
+default_yard = str(row["Yard"])
+default_coating_applied = str(row["CoatingAppliedDate"])
+default_notes = str(row.get("CoatingNotes", ""))
+with st.form("inspect"):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        insp_date = st.date_input("Inspection Date", date.today())
+    with c2:
+        tank = st.text_input("Tank / Hold")
+        location = st.text_input("Location")
+    with c3:
+        inspector = st.text_input("Inspector")
+        remarks = st.text_area("Remarks", height=90)
+
+    # Auto-filled from Fleet Master (updates when vessel changes)
+    paint_maker = st.text_input("Paint Manufacturer", value=default_paint)
+    yard = st.text_input("Yard (coating applied)", value=default_yard)
+    coating_applied = st.text_input(
+        "Coating Applied Date (YYYY-MM-DD)",
+        value=default_coating_applied
+    )
+    coating_notes = st.text_input(
+        "Coating notes/system",
+        value=default_notes
+    )   
         with c2:
             tank = st.text_input("Tank / Hold")
             location = st.text_input("Location")
@@ -616,3 +642,4 @@ with tab2:
         "Tip: For fair comparison, keep coating age comparable. We capture AgeMonths for later normalization "
         "(next step: rate-of-rust per month within age bands)."
     )
+
