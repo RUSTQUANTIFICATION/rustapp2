@@ -1,11 +1,13 @@
-streamlit
+streamlit==1.55.0
 numpy
 pandas
-opencv-python
-Pillow
+pillow
 openpyxl
 python-docx
 reportlab
+opencv-python-headless
+lxml
+
 
 
 
